@@ -1,86 +1,75 @@
 # teleport-workload-identity-k8s
 
-Give every pod in a Kubernetes cluster a cryptographic identity, issued by Teleport, with
-no per-workload configuration and no stored secret. One `tbot` DaemonSet turns the cluster
-into a SPIFFE issuer; one `workload_identity` resource on the Teleport side says what the
-identity looks like: `spiffe://<your-teleport-cluster>/svc/<namespace>/<serviceaccount>`,
-computed at issuance from facts the node's kubelet attested. The same manifests and the
-same resource serve your second cluster and your hundredth.
-
-Verified against Teleport 18.11.1 (Enterprise Cloud) on k3s, Talos 1.13 and Amazon EKS
-1.35 with identical manifests. Issuer join: 2 s. First identity for a new pod: under 1 s.
-
-## What you will see
-
-A pod that mounted one socket and asked, and got this back:
+Turn a Kubernetes cluster into a SPIFFE identity issuer backed by Teleport. Any pod can
+ask a socket on its node "who am I?" and get back a signed, short-lived identity computed
+from its namespace and ServiceAccount:
 
 ```
-token(spiffe://example.teleport.sh/svc/payments/processor):
-        eyJhbGciOiJSUzI1NiIs…            ← a 15-minute JWT: sub = the SPIFFE ID, aud = sts.amazonaws.com,
-hint(spiffe://example.teleport.sh/svc/payments/processor):        kube.cluster/namespace/pod as extra claims
-        k8s-prod                          ← which cluster's issuer minted it
+spiffe://<your-teleport-cluster>/svc/<namespace>/<serviceaccount>
 ```
 
-Three facts carry the value:
-- **Nothing named this identity.** The pod's manifest has no identity in it. The
-  namespace and ServiceAccount were attested by the kubelet and rendered into the ID.
-- **No secret exists anywhere.** Not in the pod, not in the issuer, not in Teleport's
-  join token (which is a public key). Certificates last an hour, tokens fifteen minutes,
-  both renewed automatically.
-- **One resource, every cluster.** Adding a cluster is a bot and a token. Changing the ID
-  structure is one edit on the Teleport side.
+No per-workload configuration, no stored secret, and the same manifests for every
+cluster. Verified on k3s, Talos and Amazon EKS against Teleport 18.11.1 (Enterprise).
 
-For the six terms this depends on (trust domain, SPIFFE ID, SVID, trust bundle, Workload
-API, attestation), read [docs/concepts.md](docs/concepts.md); ten minutes.
+## Why this matters
 
-## Before you start
+- **Identity is computed, not configured.** The pod's manifest names no identity. The
+  node's kubelet attests the namespace and ServiceAccount, and Teleport renders them into
+  the ID. A pod cannot claim to be `payments` from inside `analytics`, because the
+  namespace is not the pod's to choose.
+- **There is no secret to steal or rotate.** The issuer joins Teleport with its own
+  Kubernetes ServiceAccount token. X.509 certificates last one hour, JWTs fifteen
+  minutes, and both renew automatically.
+- **One resource governs every cluster.** Adding a cluster is one bot and one token.
+  Changing the shape of the ID is one edit on the Teleport side, and every issuer follows
+  on its next request.
 
-- Teleport Enterprise 18.x (Cloud or self-hosted). Workload Identity is an Enterprise feature.
-- `tsh` and `tctl` logged in with the `editor` preset (creates roles, bots, tokens).
-- `kubectl` with cluster-admin on the cluster, once: the issuer needs a namespace, RBAC,
-  and two privileged DaemonSets (see [Security posture](#security-posture)).
-- Kubernetes 1.21+ with projected ServiceAccount tokens (every current distribution).
-- Outbound HTTPS from your machine to the Teleport proxy (the render script asks it which
-  tbot version to use; set `TBOT_VERSION=` to skip that).
+## The components
 
-## Quick start
+| Component | Where it runs | What it does | File |
+|---|---|---|---|
+| `workload_identity` resource | Teleport | The identity template: the ID path, the lifetimes, the extra JWT claims, and the rule that the caller must be attested by a kubelet. One per Teleport cluster. | `teleport/workload-identity-svc.yaml` |
+| Issuer role | Teleport | Lets a bot issue identities carrying the label `tier: svc`, and nothing else in Teleport. | `teleport/role-workload-identity-issuer.yaml` |
+| Bot and join token | Teleport | One bot per Kubernetes cluster, named after it. The token holds the cluster's public signing keys, so the issuer pods join with their own ServiceAccount token and nothing is distributed to the node. | `scripts/make-token.sh` |
+| `tbot` DaemonSet | every node, namespace `teleport-wi` | The issuer. Serves the SPIFFE Workload API on a Unix socket, works out which pod is calling, and asks Teleport to sign that pod's identity. | `k8s/daemonset.yaml`, `k8s/configmap.yaml` |
+| SPIFFE CSI driver | every node, namespace `teleport-wi` | Mounts the socket into any pod that declares a `csi.spiffe.io` volume, so workload namespaces need no special privileges. | `k8s/csi-driver.yaml` |
+| Your pod | any namespace | Mounts the volume and asks the socket, using any SPIFFE client library or the SPIRE command line. | your manifest |
 
-Replace `example.teleport.sh` with your proxy and `k8s-prod` with a name for this
-Kubernetes cluster. Everything else is as written. Point `kubectl` at the cluster first.
+Three terms, defined once. **SPIFFE** (Secure Production Identity Framework For Everyone)
+is the open standard for workload identity. An **SVID** (SPIFFE Verifiable Identity
+Document) is the identity as a credential: an X.509 certificate for mutual TLS, or a JWT
+for systems that speak OpenID Connect such as AWS. The **Workload API** is the socket a
+pod asks for its SVIDs. Six more terms in ten minutes: [docs/concepts.md](docs/concepts.md).
 
-```bash
-tsh login --proxy=example.teleport.sh:443
+## How an identity is issued
 
-# 1. Once per Teleport cluster: the identity template and the issuer role (safe to re-run)
-tctl create --force -f teleport/workload-identity-svc.yaml
-tctl create --force -f teleport/role-workload-identity-issuer.yaml
-
-# 2. Once per Kubernetes cluster: a bot named after the cluster, and its join token
-#    (make-token.sh reads the cluster's signing keys from your current kubectl context)
-scripts/make-token.sh k8s-prod | tctl create --force -f -
-tctl bots add k8s-prod --roles=workload-identity-issuer --token=k8s-prod-issuer   # once; errors if it exists
-
-# 3. The issuer: tbot + the SPIFFE CSI driver, one pod each per node
-PROXY_ADDR=example.teleport.sh:443 TOKEN_NAME=k8s-prod-issuer scripts/render.sh | kubectl apply -f -
-scripts/check.sh k8s-prod
+```
+ pod ──(1) ask──► tbot on the same node ──(3) attested facts──► Teleport Auth ──(4) signed SVIDs──► pod
+                        │
+                        └─(2) who is calling? process ID → cgroup → pod → this node's kubelet
 ```
 
-`check.sh` prints one line per check; the last two lines should say the bot has one healthy
-instance per node and the token matches the cluster's current signing keys.
+1. The pod connects to the Workload API socket and asks for its SVIDs.
+2. tbot resolves the calling process to a pod through its cgroup, then asks this node's
+   kubelet for the pod's namespace, ServiceAccount, name and labels. It can only attest
+   pods on its own node, which is why it runs as a DaemonSet with `hostPID`.
+3. tbot forwards the attested facts to the Teleport Auth Service over its bot certificate.
+4. The Auth Service finds the `workload_identity` resources the bot's role allows, checks
+   the rule (`workload.kubernetes.attested` is `true`), renders the template, and signs.
+   tbot never holds a signing key.
+5. The pod receives an X.509 SVID, a JWT SVID on request, and the trust bundle. Its client
+   library renews them in the background.
 
-## Walkthrough
+The trust model in one sentence: the node attests, Teleport decides and signs, and a
+compromised node can mint identities only for pods that really run on it.
 
-### 1. The template is the whole identity policy
-
-```bash
-tctl get workload_identity/svc
-```
+The template, as shipped:
 
 ```yaml
 spec:
   spiffe:
     id: /svc/{{ workload.kubernetes.namespace }}/{{ workload.kubernetes.service_account }}
-    hint: "{{ user.bot_name }}"
+    hint: "{{ user.bot_name }}"                       # which cluster's issuer minted it
     x509: { maximum_ttl: 3600s }
     jwt:
       maximum_ttl: 900s
@@ -91,33 +80,43 @@ spec:
       - conditions: [{ attribute: workload.kubernetes.attested, eq: { value: "true" } }]
 ```
 
-Nothing is issued yet. A `workload_identity` is inert until a bot whose role carries the
-matching label (`tier: svc`) asks for it on behalf of an attested workload. Why the ID has
-this shape and not another (no team, no cluster in the path) is
-[docs/spiffe-id-structure.md](docs/spiffe-id-structure.md).
+Why the path is `/svc/<namespace>/<serviceaccount>`, with the cluster as a hint and a
+claim rather than part of the ID: [docs/spiffe-id-structure.md](docs/spiffe-id-structure.md).
 
-### 2. The issuer is a bot that proves what it is
+## Install
+
+You need Teleport Enterprise 18.x with `tsh` and `tctl` logged in as `editor`, and
+`kubectl` with cluster-admin on the target cluster. Replace `example.teleport.sh` with
+your proxy and `k8s-prod` with a name for this Kubernetes cluster.
 
 ```bash
-tctl get token/k8s-prod-issuer          # a public key, safe to read on screen
-tctl bots instances ls                  # one k8s-prod instance per node, Join Method: kubernetes
-kubectl -n teleport-wi logs ds/tbot | grep -E 'Fetched new bot identity|Listener opened'
+tsh login --proxy=example.teleport.sh:443
+
+# Once per Teleport cluster: the identity template and the issuer role
+tctl create --force -f teleport/workload-identity-svc.yaml
+tctl create --force -f teleport/role-workload-identity-issuer.yaml
+
+# Once per Kubernetes cluster: a join token built from the cluster's signing keys
+# (read from your current kubectl context), and a bot named after the cluster
+scripts/make-token.sh k8s-prod | tctl create --force -f -
+tctl bots add k8s-prod --roles=workload-identity-issuer --token=k8s-prod-issuer
+
+# The issuer: tbot and the CSI driver, one pod each per node
+PROXY_ADDR=example.teleport.sh:443 TOKEN_NAME=k8s-prod-issuer scripts/render.sh | kubectl apply -f -
+scripts/check.sh k8s-prod
 ```
 
-```
-Fetched new bot identity ... identity: k8s-prod, id=... | valid: ... duration=1h1m0s
-Listener opened for Workload API endpoint  addr=/run/spire/agent-sockets/spiffe.sock
-```
+`check.sh` prints one line per check. Green means every node runs a ready issuer, the
+bot has one healthy instance per node, and the token still matches the cluster's
+signing keys.
 
-The DaemonSet joined Teleport with its own projected ServiceAccount token, verified
-against the signing keys in the join token. Nothing was distributed to the node. Its
-role allows exactly one thing: issuing identities labelled `tier: svc`.
+`render.sh` asks the proxy which tbot version to use. Set `TBOT_VERSION=18.11.1` to
+skip that when your machine has no route to the proxy.
 
-### 3. A pod asks for its identity
+## Try it
 
-Any pod that mounts the Workload API socket can ask. The socket arrives as an ephemeral
-`csi` volume from the SPIFFE CSI driver that renders alongside tbot, so the pod's
-namespace needs no special Pod Security level. A throwaway client using the SPIRE CLI:
+Run a throwaway pod that asks for a JWT with the SPIRE command line. Nothing in this
+manifest says who the pod is; only the ServiceAccount it runs as.
 
 ```bash
 kubectl create namespace payments
@@ -129,8 +128,6 @@ metadata: { name: probe }
 spec:
   serviceAccountName: processor
   restartPolicy: Never
-  # Pod Security "restricted" compliant: a hardened namespace accepts this as-is.
-  # (The SPIRE image runs as root by default; any non-root uid can read the socket.)
   securityContext: { runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: { type: RuntimeDefault } }
   containers:
     - name: probe
@@ -147,86 +144,43 @@ kubectl -n payments wait --for=jsonpath='{.status.phase}'=Succeeded pod/probe --
 kubectl -n payments logs probe
 ```
 
-What you should see is the block under "What you will see": a token for
-`spiffe://example.teleport.sh/svc/payments/processor` and the hint `k8s-prod`. Decode the
-token's middle segment and the claims read `"sub": "spiffe://…/svc/payments/processor"`
-and `"kube": {"cluster": "k8s-prod", "namespace": "payments", "pod": "probe"}`.
+```
+token(spiffe://example.teleport.sh/svc/payments/processor):
+        eyJhbGciOiJSUzI1NiIs…
+hint(spiffe://example.teleport.sh/svc/payments/processor):
+        k8s-prod
+```
 
-On the issuer side, the log line for that request shows what the kubelet attested:
+Decode the token's middle segment and the claims read `"sub": "spiffe://…/svc/payments/processor"`
+and `"kube": {"cluster": "k8s-prod", "namespace": "payments", "pod": "probe"}`. On the
+issuer side, the matching log line shows what the kubelet attested:
 
 ```bash
 kubectl -n teleport-wi logs ds/tbot | grep FetchJWTSVID | tail -1
 # ... kubernetes:{attested:true namespace:"payments" service_account:"processor" pod_name:"probe" ...}
 ```
 
-### 4. The same manifest, another project
+Now apply the identical pod in a namespace `analytics` with a ServiceAccount `processor`.
+The log reads `token(spiffe://example.teleport.sh/svc/analytics/processor)`. Same
+manifest, different identity, and nobody configured either one.
 
-```bash
-kubectl -n payments delete pod probe
-kubectl create namespace analytics
-kubectl -n analytics create serviceaccount processor
-# apply the identical Pod in analytics, then:
-kubectl -n analytics logs probe
-```
-
-```
-token(spiffe://example.teleport.sh/svc/analytics/processor):
-```
-
-A different identity from the same resource, and nobody wrote a line of configuration
-for it. That is what a policy written against `spiffe://…/svc/payments/*` protects: a
-pod in `analytics` cannot become `payments` by editing its own manifest, because the
-namespace is not the pod's to choose.
-
-To see the identity *used* (AWS via OIDC federation, mutual TLS between pods), deploy
-[spiffe-whoami](https://github.com/jsabo/spiffe-whoami), which was written for that.
-
-## How it works
-
-```
- pod (payments/processor)              node                       Teleport (trust domain example.teleport.sh)
- ┌──────────────────────┐  csi volume  ┌──────────────────────┐  bot cert  ┌──────────────────────────────┐
- │ SPIFFE client asks   │ ───────────► │ tbot DaemonSet        │ ─────────► │ Auth Service:                 │
- │ "who am I?"          │  (socket)    │  1. who is calling?   │  attested  │  match workload_identity by   │
- │                      │ ◄─────────── │     PID → cgroup → pod│  facts     │  the bot's role labels,       │
- │ gets SVID + bundle   │ X.509 / JWT  │     via this kubelet  │ ◄───────── │  evaluate rules, render the   │
- └──────────────────────┘              │  2. forward the facts │  SVIDs     │  template, sign               │
-                                       └──────────────────────┘            └──────────────────────────────┘
-                                       spiffe-csi-driver DaemonSet: bind-mounts the socket dir into pods
-```
-
-- **The issuer is a bot.** It joins with the `kubernetes` method: its own projected
-  ServiceAccount token, verified by the Auth Service against the cluster's signing keys
-  (`static_jwks`, so it also works when the Auth Service cannot reach your cluster, which
-  is always the case on Teleport Cloud). No secret is stored; a restarted pod re-joins.
-- **Attestation is local.** The Workload API is a Unix socket, so only pods on the same
-  node can reach it. tbot resolves the caller's process ID to a pod through its cgroup and
-  asks this node's kubelet for the pod's namespace, ServiceAccount, name, labels and image.
-  That is why tbot is a DaemonSet with `hostPID`.
-- **The Auth Service decides and signs.** tbot forwards the attested facts. The Auth
-  Service finds the `workload_identity` resources the bot's role allows, evaluates each
-  one's rules against the facts, renders the templates, and signs. tbot never holds a
-  signing key, and a compromised node cannot mint an identity for a pod it does not run.
-- **The CSI driver delivers the socket.** tbot writes it to a hostPath on the node; the
-  SPIFFE CSI driver bind-mounts that directory into any pod declaring a `csi.spiffe.io`
-  volume. hostPath volumes are forbidden by Pod Security `baseline`, which Talos and
-  hardened clusters enforce, so without the driver every tenant namespace would have to
-  be privileged. With it, only `teleport-wi` is.
+To see an identity used, for AWS access without a key and for mutual TLS between pods,
+deploy [spiffe-whoami](https://github.com/jsabo/spiffe-whoami).
 
 ## 5-minute demo script
 
 1. `kubectl -n payments get pod probe -o yaml | grep -ci secret` → "Zero. This pod holds no
-   credential of any kind."
-2. `kubectl -n payments logs probe` → "It asked a socket who it is and got a signed
-   identity naming its namespace and ServiceAccount. Nothing in its manifest says that."
+   credential."
+2. `kubectl -n payments logs probe` → "It asked a socket who it is and got a signed identity
+   naming its namespace and ServiceAccount. Nothing in the manifest says that."
 3. `tctl get workload_identity/svc` → "This one template is the policy for every pod in
-   every cluster. The ID is computed from what the kubelet attested."
-4. Apply the same pod in `analytics`, show the log → "Different project, different
-   identity, no configuration. It cannot claim to be payments."
-5. `tctl bots instances ls` → "The issuer itself is a Teleport identity: one per node, joined
-   with the pod's own ServiceAccount token, no secret ever distributed."
+   every cluster."
+4. The same pod in `analytics` → "Different namespace, different identity, no
+   configuration. It cannot claim to be payments."
+5. `tctl bots instances ls` → "The issuer is itself a Teleport identity: one per node,
+   joined with the pod's own ServiceAccount token."
 6. `tctl lock --user=bot-k8s-prod --ttl=5m` → "Kill switch. Issuance on this cluster stops
-   within one renewal; what is already out expires in an hour."
+   within one renewal."
 
 ## Security posture
 
@@ -234,82 +188,54 @@ Read this before installing on a cluster you care about.
 
 | What | Why | Scope |
 |---|---|---|
-| `tbot` DaemonSet: `hostPID`, `hostNetwork`, privileged, root | resolving a connecting process to its pod means reading that process's cgroup, and querying this node's kubelet | namespace `teleport-wi` only |
-| `spiffe-csi-driver` DaemonSet: privileged, `mountPropagation: Bidirectional` into `/var/lib/kubelet/pods` | standard for any CSI node plugin: it creates bind mounts the kubelet must see | `teleport-wi` only |
-| `kubelet.skip_verify: true` | the attestor connects to the kubelet's secure port (10250); most distributions sign that serving cert from a CA the pod cannot see. The kubelet still authenticates tbot by its ServiceAccount token (RBAC `nodes/proxy`), and tbot only reads pod metadata. Set to `false` and supply `ca_path` if your kubelets carry verifiable certs | attestor only |
-| Issuer role: `workload_identity_labels: {tier: [svc]}` + read on `workload_identity` | the bot can issue exactly the identities carrying that label, and nothing else in Teleport | one role, all issuer bots |
-| `teleport-wi` namespace labelled `pod-security.kubernetes.io/enforce: privileged` | the two DaemonSets above | this namespace only; workload namespaces stay `baseline` or `restricted` |
+| `tbot` DaemonSet runs privileged with `hostPID` and `hostNetwork` | resolving a caller to its pod means reading that process's cgroup and querying this node's kubelet | namespace `teleport-wi` only |
+| CSI driver DaemonSet runs privileged with `mountPropagation: Bidirectional` | standard for any CSI node plugin: it creates bind mounts the kubelet must see | `teleport-wi` only |
+| `kubelet.skip_verify: true` | most distributions sign the kubelet's serving certificate from a CA the pod cannot see. The kubelet still authenticates tbot by its ServiceAccount token, and tbot only reads pod metadata. Set `false` and supply `ca_path` if your kubelets carry verifiable certificates | attestor only |
+| Issuer role: label selector plus read on `workload_identity` | the bot can issue exactly the identities carrying `tier: svc` | one role, all issuer bots |
+| `teleport-wi` labelled Pod Security `privileged` | the two DaemonSets above | workload namespaces stay `baseline` or `restricted`; the probe above passes `restricted` |
 
-The trust model in one sentence: the node attests, Teleport decides and signs, and a
-compromised node can at most mint identities for pods that really run on it.
+## Distributions
 
-## Distribution notes
-
-The manifests are identical on every distribution; these are the facts that differ.
+The manifests are identical everywhere. These are the facts that differ.
 
 | Distribution | Verified | Notes |
 |---|---|---|
-| k3s | 1.31 | Runs as-is. If k3s itself runs in a container (k3d, Docker), `/var/lib/kubelet` must be a shared mount for the CSI driver: `mount --make-rshared` or a bind mount with `propagation: rshared`, otherwise the driver pod fails with "is mounted on /var/lib/kubelet but it is not a shared mount" |
-| Talos | 1.13 | Enforces Pod Security `baseline` on every namespace. Only `teleport-wi` needs the `privileged` label, which the namespace manifest carries. Control planes are `NoSchedule`; the issuer lands on workers |
+| k3s | 1.31 | Runs as-is. If k3s itself runs in a container, `/var/lib/kubelet` must be a shared mount (`mount --make-rshared`, or a bind mount with `propagation: rshared`) or the CSI driver fails with "is mounted on /var/lib/kubelet but it is not a shared mount" |
+| Talos | 1.13 | Enforces Pod Security `baseline` on every namespace, which forbids hostPath volumes. The CSI volume is what makes consumer pods work here; only `teleport-wi` carries the `privileged` label |
 | Amazon EKS | 1.35 | Runs as-is. The cluster publishes many signing keys (14 measured); `make-token.sh` pins all of them |
 
 ## Troubleshooting
 
-- `access denied to perform action "readnosecrets" on "workload_identity"` in the tbot log
-  on every request: the issuer role lacks `rules: [{resources: [workload_identity], verbs:
-  [list, read]}]`. `teleport/role-workload-identity-issuer.yaml` has it; re-apply.
-- `violates PodSecurity "baseline:latest": hostPath volumes` when a workload pod is
-  created: the pod uses a hostPath for the socket. Use the `csi.spiffe.io` volume.
-- `is mounted on /var/lib/kubelet but it is not a shared mount` on the CSI driver pod:
-  see the k3s row above.
-- `invalid google.protobuf.Duration value "1h"` from `tctl create`: durations in
-  `workload_identity` are seconds with an `s` suffix (`3600s`).
-- Issuer pods `CrashLoopBackOff` after a cluster rebuild: the cluster's signing keys
-  changed. `scripts/jwks.sh --check k8s-prod-issuer`, then
+- `access denied to perform action "readnosecrets" on "workload_identity"` in the tbot log:
+  the issuer role lacks `rules: [{resources: [workload_identity], verbs: [list, read]}]`.
+  Re-apply `teleport/role-workload-identity-issuer.yaml`.
+- `violates PodSecurity "baseline:latest": hostPath volumes` on a workload pod: use the
+  `csi.spiffe.io` volume, not a hostPath.
+- `is mounted on /var/lib/kubelet but it is not a shared mount` on the CSI driver pod: see
+  the k3s row above.
+- `invalid google.protobuf.Duration value "1h"` from `tctl create`: lifetimes are seconds
+  with an `s` suffix (`3600s`).
+- Issuer pods in `CrashLoopBackOff` after a cluster rebuild: the signing keys changed.
+  `scripts/jwks.sh --check k8s-prod-issuer`, then
   `scripts/make-token.sh k8s-prod | tctl create --force -f -`.
-- A pod gets two SVIDs: it matches two `workload_identity` resources. The shipped design
-  has one; if you enabled the optional location identity, select by ID or hint in your
-  client.
 
 ## Day two
 
-- **Adding a cluster**: steps 2 and 3 of the quick start with a new name. No change to
-  the identity resource or the role.
-- **Rotation**: nothing to do. X.509 SVIDs renew at half life inside SPIFFE clients; JWTs
-  are fetched per use; Teleport CA rotation reaches clients as an updated trust bundle
-  over the Workload API stream.
-- **Revoking an issuer**: `tctl lock --user=bot-<cluster>`. Issuance stops within one
-  renewal; existing SVIDs run out at their TTL.
-- **Changing the ID structure**: edit `teleport/workload-identity-svc.yaml`, `tctl create
-  --force`. Every issuer follows on its next request; no tbot config changes.
-- **Location-bound identities**: `teleport/workload-identity-k8s-optional.yaml` adds
-  `/k8s/<cluster>/<ns>/<sa>` for policies that depend on where a workload runs. Off by
-  default; see its header.
-- **Versions**: tbot follows your cluster (`render.sh` reads `server_version`; override
-  with `TBOT_VERSION`). CSI driver 0.2.13 and registrar v2.18.0 are pinned in `render.sh`
-  (`CSI_DRIVER_VERSION`, `CSI_REGISTRAR_VERSION`). `WITH_CSI=0` renders without the driver;
-  not recommended, since consumers then need hostPath and a privileged namespace.
-
-## Layout
-
-```
-teleport/workload-identity-svc.yaml           the identity every pod gets, templated
-teleport/workload-identity-k8s-optional.yaml  optional location-bound identity, off by default
-teleport/role-workload-identity-issuer.yaml   the issuer bots' one permission
-teleport/bot-token-example.yaml               what make-token.sh generates, annotated
-k8s/namespace.yaml  k8s/rbac.yaml             ns teleport-wi (PSA privileged), SA, kubelet read RBAC
-k8s/configmap.yaml  k8s/daemonset.yaml        tbot config (Workload API + Kubernetes attestor), DaemonSet
-k8s/csi-driver.yaml                           SPIFFE CSI driver DaemonSet + CSIDriver
-scripts/make-token.sh                         join token with the cluster's signing keys filled in
-scripts/render.sh                             fill proxy/token/cluster/versions into k8s/*.yaml
-scripts/check.sh                              post-install / pre-demo health check
-scripts/jwks.sh                               the cluster's signing keys; --check compares with a token
-docs/concepts.md                              ten-minute primer
-docs/spiffe-id-structure.md                   why /svc/<namespace>/<serviceaccount>
-```
+- **Add a cluster**: the two "once per Kubernetes cluster" steps and the render, with a
+  new name. Nothing changes on the Teleport side.
+- **Rotate**: nothing to do. SVIDs renew inside the client; a Teleport CA rotation reaches
+  clients as an updated trust bundle over the Workload API.
+- **Revoke an issuer**: `tctl lock --user=bot-<cluster>`. Issuance stops within one
+  renewal; existing SVIDs run out at their lifetime.
+- **Change the ID shape**: edit `teleport/workload-identity-svc.yaml` and `tctl create
+  --force`. No tbot changes.
+- **Location-bound identities**: `teleport/workload-identity-k8s-optional.yaml` adds a
+  second identity, `/k8s/<cluster>/<namespace>/<serviceaccount>`, for policies that depend
+  on where a workload runs. Off by default.
+- **Versions**: tbot follows your Teleport cluster. The CSI driver (0.2.13) and its
+  registrar (v2.18.0) are pinned in `scripts/render.sh`.
 
 ## License
 
 Apache-2.0. The CSI driver manifest is adapted from
-[spiffe/spiffe-csi](https://github.com/spiffe/spiffe-csi); the rest follows the Teleport
-Workload Identity documentation.
+[spiffe/spiffe-csi](https://github.com/spiffe/spiffe-csi).
