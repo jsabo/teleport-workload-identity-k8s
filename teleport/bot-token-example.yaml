@@ -1,4 +1,6 @@
-# Join token for one Kubernetes cluster's issuer DaemonSet. One token per
+# Join token for one Kubernetes cluster's issuer DaemonSet, annotated. You do not
+# need to edit this file: `scripts/make-token.sh <bot-name>` prints a complete
+# token with the current cluster's signing keys filled in. One token per
 # cluster; name the bot after the cluster so `user.bot_name` in templates and
 # JWT claims says where a credential was minted.
 #

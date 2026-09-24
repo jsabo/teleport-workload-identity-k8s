@@ -14,9 +14,12 @@ if [ "${1:-}" = "--check" ]; then
   live_kid=$(printf '%s' "$live" | jq -r '.keys[].kid' | sort)
   pinned_kid=$(printf '%s' "$pinned" | jq -r '.keys[].kid' | sort)
   if [ "$live_kid" = "$pinned_kid" ]; then
-    echo "ok: token ${token} pins the cluster's current key(s): ${live_kid}"
+    echo "ok: token ${token} pins the cluster's current $(printf '%s\n' "$live_kid" | sort -u | wc -l | tr -d ' ') signing key(s)"
   else
-    echo "MISMATCH: cluster has ${live_kid}, token ${token} pins ${pinned_kid} — recreate the token" >&2
+    echo "MISMATCH: token ${token} does not pin the cluster's current signing keys — recreate it:" >&2
+    echo "  scripts/make-token.sh ${token%-issuer} | tctl create --force -f -" >&2
+    echo "  live:   $(printf '%s' "$live_kid" | tr '\n' ' ')" >&2
+    echo "  pinned: $(printf '%s' "$pinned_kid" | tr '\n' ' ')" >&2
     exit 1
   fi
   exit 0
