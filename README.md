@@ -51,14 +51,14 @@ Kubernetes cluster. Everything else is as written. Point `kubectl` at the cluste
 ```bash
 tsh login --proxy=example.teleport.sh:443
 
-# 1. Once per Teleport cluster: the identity template and the issuer role
-tctl create -f teleport/workload-identity-svc.yaml
-tctl create -f teleport/role-workload-identity-issuer.yaml
+# 1. Once per Teleport cluster: the identity template and the issuer role (safe to re-run)
+tctl create --force -f teleport/workload-identity-svc.yaml
+tctl create --force -f teleport/role-workload-identity-issuer.yaml
 
 # 2. Once per Kubernetes cluster: a bot named after the cluster, and its join token
 #    (make-token.sh reads the cluster's signing keys from your current kubectl context)
-scripts/make-token.sh k8s-prod | tctl create -f -
-tctl bots add k8s-prod --roles=workload-identity-issuer --token=k8s-prod-issuer
+scripts/make-token.sh k8s-prod | tctl create --force -f -
+tctl bots add k8s-prod --roles=workload-identity-issuer --token=k8s-prod-issuer   # once; errors if it exists
 
 # 3. The issuer: tbot + the SPIFFE CSI driver, one pod each per node
 PROXY_ADDR=example.teleport.sh:443 TOKEN_NAME=k8s-prod-issuer scripts/render.sh | kubectl apply -f -
