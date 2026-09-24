@@ -79,14 +79,16 @@ Fetched new bot identity ... k8s-prod, id=... | valid: ... duration=1h1m0s
 Listener opened for Workload API endpoint  addr=/run/spire/agent-sockets/spiffe.sock
 ```
 
-**A workload.** Any pod that mounts the socket directory can ask. With the SPIRE CLI
-image as a throwaway client:
+**A workload.** Any pod that mounts the socket can ask. The socket arrives as an
+ephemeral `csi` volume from the SPIFFE CSI driver that renders alongside tbot, so the
+workload's namespace needs no special Pod Security level. With the SPIRE CLI image as a
+throwaway client:
 
 ```bash
 kubectl -n payments create sa processor
 kubectl -n payments run probe --restart=Never --serviceaccount=processor \
   --image=ghcr.io/spiffe/spire-agent:1.12.4 \
-  --overrides='{"spec":{"volumes":[{"name":"s","hostPath":{"path":"/run/spire/agent-sockets"}}],
+  --overrides='{"spec":{"volumes":[{"name":"s","csi":{"driver":"csi.spiffe.io","readOnly":true}}],
     "containers":[{"name":"probe","image":"ghcr.io/spiffe/spire-agent:1.12.4",
     "command":["/opt/spire/bin/spire-agent","api","fetch","jwt","-audience","sts.amazonaws.com","-socketPath","/s/spiffe.sock"],
     "volumeMounts":[{"name":"s","mountPath":"/s"}]}]}}'
@@ -144,6 +146,13 @@ from the same resource. That is the demo.
 - **Attestation is local.** The Workload API is a Unix socket, so only pods on the same
   node can reach it, and tbot resolves the caller's PID to a pod through the cgroup and
   the node's kubelet. That is why it must be a DaemonSet with `hostPID`.
+- **The socket reaches pods through a CSI driver.** tbot writes the socket to a hostPath
+  on the node; the SPIFFE CSI driver (a second DaemonSet in the same namespace)
+  bind-mounts that directory into any pod that declares a `csi.spiffe.io` volume. Pods
+  could mount the hostPath directly, but hostPath volumes are forbidden by the Pod
+  Security `baseline` policy that Talos and hardened clusters enforce, and that would
+  force every tenant namespace to be privileged. With the CSI volume only `teleport-wi`
+  is privileged. Set `WITH_CSI=0` on `render.sh` to leave the driver out.
 - **The Auth Service decides.** tbot forwards the attested facts; the Auth Service matches
   `workload_identity` resources by label, evaluates each one's rules against those facts,
   renders the templates, and signs. tbot never holds a signing key.
@@ -166,9 +175,12 @@ from the same resource. That is the demo.
   adds `/k8s/<cluster>/<ns>/<sa>` for policies that genuinely depend on where a workload
   runs. A pod matching both receives two SVIDs; SPIFFE clients treat the first as the
   default, so only enable it when consumers select by ID or hint.
-- **Pod Security Admission**: the namespace manifest carries
+- **Pod Security Admission**: `teleport-wi` carries
   `pod-security.kubernetes.io/enforce: privileged`, which Talos and other PSA-enforcing
-  distributions require for a privileged DaemonSet.
+  distributions require for the two privileged DaemonSets. Workload namespaces need
+  nothing: measured on Talos, a `baseline` namespace rejected a hostPath consumer
+  (`violates PodSecurity "baseline:latest": hostPath volumes`) and accepted the same pod
+  with the `csi` volume.
 
 ## Layout
 
@@ -179,7 +191,8 @@ teleport/role-workload-identity-issuer.yaml   the issuer bots' one permission
 teleport/bot-token-example.yaml               kubernetes join token, static_jwks, one per cluster
 k8s/namespace.yaml  k8s/rbac.yaml             ns teleport-wi (PSA privileged), SA, kubelet read RBAC
 k8s/configmap.yaml  k8s/daemonset.yaml        tbot config (Workload API + Kubernetes attestor), DaemonSet
-scripts/render.sh                             fill proxy/token/cluster/version into k8s/*.yaml
+k8s/csi-driver.yaml                           SPIFFE CSI driver DaemonSet + CSIDriver: the socket as a csi volume
+scripts/render.sh                             fill proxy/token/cluster/versions into k8s/*.yaml (WITH_CSI=0 to omit the driver)
 scripts/jwks.sh                               the cluster's signing keys; --check compares with a token
 docs/concepts.md                              ten-minute primer
 docs/spiffe-id-structure.md                   why /svc/<namespace>/<serviceaccount>

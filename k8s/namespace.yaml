@@ -3,6 +3,8 @@ kind: Namespace
 metadata:
   name: teleport-wi
   labels:
-    # The issuer runs privileged with hostPID; clusters that enforce Pod Security
-    # Admission (Talos does by default) need the namespace opted in.
+    # The issuer and the CSI driver run privileged with hostPID/hostPath; clusters
+    # that enforce Pod Security Admission (Talos does by default, baseline) need
+    # this one namespace opted in. Workload namespaces do not: they receive the
+    # socket through a csi volume, which baseline allows.
     pod-security.kubernetes.io/enforce: privileged

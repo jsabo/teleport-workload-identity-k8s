@@ -9,7 +9,12 @@
 #   TELEPORT_CLUSTER  Teleport cluster name = the projected token's audience
 #                     (default: PROXY_ADDR without the port)
 #   TBOT_VERSION      tbot image tag (default: the cluster's server_version)
+#   CSI_DRIVER_VERSION, CSI_REGISTRAR_VERSION   SPIFFE CSI driver and kubelet registrar tags
+#   WITH_CSI=0        omit the CSI driver (consumers then need hostPath and a privileged namespace)
 set -euo pipefail
+CSI_DRIVER_VERSION="${CSI_DRIVER_VERSION:-0.2.13}"
+CSI_REGISTRAR_VERSION="${CSI_REGISTRAR_VERSION:-v2.18.0}"
+WITH_CSI="${WITH_CSI:-1}"
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 : "${PROXY_ADDR:?set PROXY_ADDR (host:port)}"
@@ -20,11 +25,15 @@ if [ -z "${TBOT_VERSION:-}" ]; then
   [ -n "$TBOT_VERSION" ] || { echo "render.sh: could not read server_version from ${PROXY_ADDR}; set TBOT_VERSION" >&2; exit 1; }
 fi
 
-for f in namespace rbac configmap daemonset; do
+files="namespace rbac configmap daemonset"
+[ "$WITH_CSI" = "1" ] && files="$files csi-driver"
+for f in $files; do
   sed -e "s|\${PROXY_ADDR}|${PROXY_ADDR}|g" \
       -e "s|\${TOKEN_NAME}|${TOKEN_NAME}|g" \
       -e "s|\${TELEPORT_CLUSTER}|${TELEPORT_CLUSTER}|g" \
       -e "s|\${TBOT_VERSION}|${TBOT_VERSION}|g" \
+      -e "s|\${CSI_DRIVER_VERSION}|${CSI_DRIVER_VERSION}|g" \
+      -e "s|\${CSI_REGISTRAR_VERSION}|${CSI_REGISTRAR_VERSION}|g" \
       "${here}/k8s/${f}.yaml"
   echo '---'
 done
