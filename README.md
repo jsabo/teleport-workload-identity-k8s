@@ -164,8 +164,9 @@ Now apply the identical pod in a namespace `analytics` with a ServiceAccount `pr
 The log reads `token(spiffe://example.teleport.sh/svc/analytics/processor)`. Same
 manifest, different identity, and nobody configured either one.
 
-To see an identity used, for AWS access without a key and for mutual TLS between pods,
-deploy [spiffe-whoami](https://github.com/jsabo/spiffe-whoami).
+From here any SPIFFE-aware client library (go-spiffe, java-spiffe, spiffe-helper, Envoy's
+SDS) can consume the socket the same way: an X.509 SVID for mutual TLS between pods, or a
+JWT SVID for anything that speaks OpenID Connect, such as AWS `AssumeRoleWithWebIdentity`.
 
 ## 5-minute demo script
 
