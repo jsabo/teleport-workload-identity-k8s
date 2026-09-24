@@ -129,9 +129,12 @@ metadata: { name: probe }
 spec:
   serviceAccountName: processor
   restartPolicy: Never
+  # Pod Security "restricted" compliant: a hardened namespace accepts this as-is.
+  securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
   containers:
     - name: probe
       image: ghcr.io/spiffe/spire-agent:1.12.4
+      securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
       command: ["/opt/spire/bin/spire-agent", "api", "fetch", "jwt",
                 "-audience", "sts.amazonaws.com", "-socketPath", "/spiffe-workload-api/spiffe.sock"]
       volumeMounts: [{ name: spiffe-workload-api, mountPath: /spiffe-workload-api, readOnly: true }]
