@@ -130,7 +130,8 @@ spec:
   serviceAccountName: processor
   restartPolicy: Never
   # Pod Security "restricted" compliant: a hardened namespace accepts this as-is.
-  securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+  # (The SPIRE image runs as root by default; any non-root uid can read the socket.)
+  securityContext: { runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: { type: RuntimeDefault } }
   containers:
     - name: probe
       image: ghcr.io/spiffe/spire-agent:1.12.4
