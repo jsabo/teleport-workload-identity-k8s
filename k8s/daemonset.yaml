@@ -1,0 +1,100 @@
+# One tbot per node. Workload attestation needs it: the Workload API socket is a
+# Unix socket, so only pods on the same node can reach it, and identifying the
+# caller means reading that process's cgroup and asking this node's kubelet.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tbot
+  namespace: teleport-wi
+  labels:
+    app.kubernetes.io/name: teleport-wi
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: teleport-wi
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: teleport-wi
+    spec:
+      serviceAccountName: tbot
+      # hostPID: the connecting workload's PID must be resolvable from this
+      # container. hostNetwork: reach the kubelet on the node address.
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: tbot
+          image: public.ecr.aws/gravitational/tbot-distroless:${TBOT_VERSION}
+          securityContext:
+            privileged: true
+          args:
+            - start
+            - -c
+            - /config/tbot.yaml
+            - --log-format
+            - json
+            - --diag-addr
+            - 0.0.0.0:3011
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # The kubelet the attestor queries is this node's.
+            - name: TELEPORT_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: KUBERNETES_TOKEN_PATH
+              value: /var/run/secrets/tokens/join-sa-token
+          ports:
+            - name: diagnostics
+              containerPort: 3011
+          # /readyz reflects whether the services actually work; /livez only says
+          # the process is up. Pointing liveness at /readyz makes a wedged tbot
+          # restart itself instead of serving stale credentials.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: diagnostics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: diagnostics
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: join-sa-token
+              mountPath: /var/run/secrets/tokens
+            - name: spiffe-workload-api
+              mountPath: /run/spire/agent-sockets
+      volumes:
+        - name: config
+          configMap:
+            name: tbot
+        - name: join-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: join-sa-token
+                  # 600 s is the minimum Kubernetes allows and what Teleport recommends.
+                  expirationSeconds: 600
+                  audience: ${TELEPORT_CLUSTER}
+        # The socket directory, shared with every workload on the node by
+        # hostPath. SPIRE's conventional path, so SPIFFE-aware tools find it
+        # with no configuration.
+        - name: spiffe-workload-api
+          hostPath:
+            path: /run/spire/agent-sockets
+            type: DirectoryOrCreate

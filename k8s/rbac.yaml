@@ -1,0 +1,31 @@
+# The issuer's own Kubernetes permissions. Two purposes only:
+#   - its ServiceAccount is what the Teleport join token trusts (teleport-wi:tbot)
+#   - the Kubernetes workload attestor asks the local kubelet which pod owns a
+#     connecting process, which needs `get` on nodes/proxy
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tbot
+  namespace: teleport-wi
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: teleport-wi-tbot
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: teleport-wi-tbot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: teleport-wi-tbot
+subjects:
+  - kind: ServiceAccount
+    name: tbot
+    namespace: teleport-wi

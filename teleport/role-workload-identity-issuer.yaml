@@ -1,0 +1,24 @@
+# Held only by the issuer bots (one per Kubernetes cluster). It grants exactly one
+# thing: the right to issue workload identities labelled tier=svc. Nothing else in
+# Teleport is reachable with it.
+#
+#   tctl create -f teleport/role-workload-identity-issuer.yaml
+kind: role
+version: v8
+metadata:
+  name: workload-identity-issuer
+  description: >-
+    Issue SPIFFE workload identities labelled tier=svc to attested Kubernetes
+    workloads. Held by the issuer bots only.
+spec:
+  allow:
+    # Which identities may be issued (matched against the resource's labels).
+    workload_identity_labels:
+      tier: ["svc"]
+    # The issuer must be able to read the matching resources; without this the
+    # Workload API fails with: access denied to perform action "readnosecrets"
+    # on "workload_identity".
+    rules:
+      - resources: [workload_identity]
+        verbs: [list, read]
+  deny: {}

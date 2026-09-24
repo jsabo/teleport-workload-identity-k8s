@@ -1,0 +1,32 @@
+# OPTIONAL: a second, location-bound identity. Not deployed by default.
+#
+# Use it when a policy genuinely depends on where a workload runs ("only pods in
+# the London cluster may reach the London cache"). Most policies should name the
+# service, not the cluster, which is what workload-identity-svc.yaml provides.
+#
+# A pod that matches both resources receives two SVIDs. SPIFFE allows that, but
+# clients treat the first one returned as the default, so only enable this when
+# your consumers select identities explicitly (by SPIFFE ID or hint).
+#
+# `user.bot_name` is the issuer bot; name issuer bots after their Kubernetes
+# cluster and the ID says where the pod lives with no per-cluster resource.
+kind: workload_identity
+version: v1
+metadata:
+  name: k8s
+  labels:
+    tier: k8s
+spec:
+  spiffe:
+    id: /k8s/{{ user.bot_name }}/{{ workload.kubernetes.namespace }}/{{ workload.kubernetes.service_account }}
+    hint: location
+    x509:
+      maximum_ttl: 3600s
+    jwt:
+      maximum_ttl: 900s
+  rules:
+    allow:
+      - conditions:
+          - attribute: workload.kubernetes.attested
+            eq:
+              value: "true"

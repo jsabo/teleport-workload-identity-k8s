@@ -1,0 +1,34 @@
+# Join token for one Kubernetes cluster's issuer DaemonSet. One token per
+# cluster; name the bot after the cluster so `user.bot_name` in templates and
+# JWT claims says where a credential was minted.
+#
+# join_method: kubernetes attests each DaemonSet pod by its projected
+# ServiceAccount token (audience = your Teleport cluster name). Nothing is stored
+# on the node and no secret is distributed; a restarted pod re-joins by itself.
+#
+# static_jwks: the Auth Service verifies the token against the Kubernetes
+# cluster's published signing key. Use this when the Auth Service cannot reach
+# your cluster's API (Teleport Cloud always). Fetch the key with
+# scripts/jwks.sh and paste it below. A cluster rebuild or key rotation changes
+# it and breaks the join until the token is updated.
+#
+# If your self-hosted Auth Service CAN reach the cluster API, use
+# `type: in_cluster` instead and drop the static_jwks block.
+#
+#   tctl create -f teleport/bot-token-example.yaml
+#   tctl bots add k8s-prod --roles=workload-identity-issuer --token=k8s-prod-issuer
+kind: token
+version: v2
+metadata:
+  name: k8s-prod-issuer
+spec:
+  roles: [Bot]
+  bot_name: k8s-prod
+  join_method: kubernetes
+  kubernetes:
+    type: static_jwks
+    static_jwks:
+      jwks: |
+        PASTE_OUTPUT_OF_scripts/jwks.sh
+    allow:
+      - service_account: "teleport-wi:tbot"

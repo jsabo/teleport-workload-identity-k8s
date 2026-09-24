@@ -1,0 +1,41 @@
+# The one workload identity every pod is issued.
+#
+# The SPIFFE ID is computed at issuance from facts the node's tbot attested via
+# the kubelet: the pod's namespace and ServiceAccount. Nothing is written per
+# workload, and the same resource serves every cluster. The cluster and pod are
+# carried as the hint and as JWT claims rather than in the ID, so a service keeps
+# one identity wherever it runs and policy (AWS trust, peer allowlists) names it
+# once.
+#
+# Only bots whose role carries `workload_identity_labels: {tier: [svc]}` — the
+# per-cluster issuer DaemonSets — can issue it, and the rule requires the caller
+# to have passed Kubernetes attestation.
+#
+#   tctl create -f teleport/workload-identity-svc.yaml
+kind: workload_identity
+version: v1
+metadata:
+  name: svc
+  labels:
+    tier: svc
+spec:
+  spiffe:
+    id: /svc/{{ workload.kubernetes.namespace }}/{{ workload.kubernetes.service_account }}
+    # Which cluster's issuer minted the credential (bots are named after their cluster).
+    hint: "{{ user.bot_name }}"
+    # Durations are protobuf Durations: seconds with an "s" suffix ("1h" is rejected).
+    x509:
+      maximum_ttl: 3600s
+    jwt:
+      maximum_ttl: 900s
+      extra_claims:
+        kube:
+          cluster: "{{ user.bot_name }}"
+          namespace: "{{ workload.kubernetes.namespace }}"
+          pod: "{{ workload.kubernetes.pod_name }}"
+  rules:
+    allow:
+      - conditions:
+          - attribute: workload.kubernetes.attested
+            eq:
+              value: "true"

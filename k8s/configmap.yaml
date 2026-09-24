@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tbot
+  namespace: teleport-wi
+data:
+  tbot.yaml: |
+    version: v2
+    proxy_server: ${PROXY_ADDR}
+    onboarding:
+      # The pod proves who it is with its projected ServiceAccount token; the
+      # Auth Service checks it against this cluster's signing key. Nothing is
+      # stored, so a restarted pod simply re-joins.
+      join_method: kubernetes
+      token: ${TOKEN_NAME}
+    storage:
+      type: memory
+    services:
+      # The SPIFFE Workload API. Any pod on the node that mounts the socket
+      # directory can ask for its identity; tbot attests the caller through the
+      # kubelet before the Auth Service decides what, if anything, to issue.
+      - type: workload-identity-api
+        listen: unix:///run/spire/agent-sockets/spiffe.sock
+        attestors:
+          kubernetes:
+            enabled: true
+            kubelet:
+              # k3s, KIND and most distributions sign kubelet serving certs from
+              # a CA the pod cannot see. The kubelet still authenticates tbot by
+              # its ServiceAccount token; only the server cert is unverified.
+              skip_verify: true
+        # Which workload_identity resources this issuer may hand out. The
+        # matching role grants the same label, and the resources' own rules
+        # decide per pod.
+        selector:
+          labels:
+            tier: ["svc"]
+        # Lifetime of the credentials issued through this socket. The resource's
+        # x509.maximum_ttl / jwt.maximum_ttl cap it per credential type.
+        credential_ttl: 1h
+        renewal_interval: 20m
