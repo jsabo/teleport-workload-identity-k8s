@@ -14,7 +14,7 @@ spiffe://<trust domain>/svc/<namespace>/<serviceaccount>
 ```
 
 - **Trust domain** is the Teleport cluster, one to one. It is not an environment
-  boundary: many estates run development, staging and production in one Teleport cluster
+  boundary: many organizations run development, staging and production in one Teleport cluster
   and separate them with labels and roles, and Teleport 18 adds scopes for a harder
   separation. Whatever separation your policies need has to be in the path. See
   "Environment in the path" and "Scopes" below.
@@ -67,33 +67,36 @@ that only the issuer bots in that environment's clusters are allowed to issue.
 
 ## Scopes
 
-Teleport 18 introduces scopes: a tree of paths such as `/prod/payments` under which
-roles, join tokens, bots and `workload_identity` resources can be defined, so a team can
-administer its own branch without cluster-wide privilege. A `workload_identity` created
-inside a scope must produce a SPIFFE ID whose path begins with the scope, followed by the
-separator segment `_`, followed by the administrator's own segments:
+Scopes are a Teleport 18 feature for large organizations. A scope is a path such as
+`/prod/payments`. A team can be given the right to manage roles, bots and workload
+identities inside its own scope, with no cluster-wide privilege.
+
+When a workload identity is created inside a scope, Teleport requires its SPIFFE ID to
+start with the scope path, then a separator segment `_`, then the segments the team
+chooses:
 
 ```
 spiffe://example.teleport.sh/prod/payments/_/svc/payments/processor
 ```
 
-The Auth Service re-validates the rendered ID against the scope on every issuance, so a
-scoped template cannot escape its branch (`lib/services/workload_identity.go:215` at
-v18.11.2; design in RFD 0229c). In a scoped estate the environment and the owning team
-therefore come from the scope, enforced by Teleport, and the `/svc/<namespace>/<serviceaccount>`
-shape here is what goes after the separator. At 18.11 the scopes code is present but the
-documentation and the RFD are not yet final; treat it as a preview and verify against your
-version before building policy on it.
+Teleport checks this every time it issues an identity, so a team's template can only ever
+produce identities under its own scope. For the structure in this repository, the
+environment and the owning team are supplied by the scope and enforced by Teleport, and
+`/svc/<namespace>/<serviceaccount>` is what follows the separator.
+
+Scopes are new in Teleport 18 and still being documented. Check the Teleport
+documentation for your version before building policy on them.
 
 ## What the template can and cannot do
 
-Templates use Teleport's predicate language. Available in 18.11: `strings.lower`,
-`strings.upper`, `strings.replaceall`, `strings.split`, `regexp.replace`, map indexing
-on labels. Two limits: a template cannot contain curly braces inside an expression (so no
-`{n}` regex quantifiers), and there is no prefix or contains function for strings, so
-"if the namespace starts with X" has to be written as a `regexp.replace`.
+Templates can lowercase, uppercase, replace, split and pattern-rewrite text, and read a
+pod's labels: `strings.lower`, `strings.upper`, `strings.replaceall`, `strings.split`,
+`regexp.replace`, and `workload.kubernetes.labels["name"]`. Two limits: an expression
+cannot contain curly braces, so regular expressions cannot use `{n}` counts, and there is
+no "starts with" or "contains" function, so a test like "the namespace begins with
+`prod-`" is written as a `regexp.replace`.
 
-Durations in the resource are protobuf Durations: write `3600s`, not `1h`.
+Lifetimes are written in seconds with an `s` suffix (`3600s`), not `1h`.
 
 ## One identity per pod
 
