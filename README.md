@@ -269,6 +269,11 @@ The manifests are identical everywhere.
   stops within one renewal; existing SVIDs run out at their lifetime.
 - **Change the ID shape**: edit `teleport/workload-identity-svc.yaml` and `tctl create -f`
   it again. No tbot changes.
+- **Several environments in one Teleport cluster**: add the environment to the path from
+  an attested source, a namespace naming convention or one `workload_identity` per
+  environment, never a typed value. With Teleport scopes the scope path becomes the
+  enforced prefix of every ID. Both are worked through in
+  [docs/spiffe-id-structure.md](docs/spiffe-id-structure.md).
 - **Need the cluster in the ID?** Only a mutual TLS peer that must accept one cluster and
   refuse another needs it: an X.509 SVID carries the SPIFFE ID alone, not the hint or the
   JWT claims. For that case, create a second `workload_identity` whose path starts with

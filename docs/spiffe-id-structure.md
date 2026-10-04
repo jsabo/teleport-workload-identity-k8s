@@ -13,9 +13,11 @@ rediscover the reasoning.
 spiffe://<trust domain>/svc/<namespace>/<serviceaccount>
 ```
 
-- **Trust domain** is the Teleport cluster. It is also the environment boundary in most
-  estates: production and non-production are different Teleport clusters, so the path
-  does not need an environment segment.
+- **Trust domain** is the Teleport cluster, one to one. It is not an environment
+  boundary: many estates run development, staging and production in one Teleport cluster
+  and separate them with labels and roles, and Teleport 18 adds scopes for a harder
+  separation. Whatever separation your policies need has to be in the path. See
+  "Environment in the path" and "Scopes" below.
 - **`svc/`** is a namespace prefix so that other identity families (VMs, CI jobs,
   location-bound identities) can be added later without colliding.
 - **`<namespace>`** is the project. In a platform where Kubernetes namespaces are assigned
@@ -53,10 +55,35 @@ claim any name. Namespace and ServiceAccount are set by the platform; labels are
 the tenant. Use labels for hints and extra claims, not for the identity.
 
 **Environment in the path** (`/production/payments/processor`, the example in Teleport's
-documentation).
-Right when several environments share one Teleport cluster. Here they do not, so the
-segment would carry no information. If you need it, derive it from a namespace naming
-convention with `regexp.replace` rather than typing it, so it stays computed.
+documentation). Right whenever several environments share one Teleport cluster, which is
+common. It is left out of the template shipped here only because the shipped template is
+the smallest one that works; add it if your policies must tell environments apart. The
+rule is the same as for every other segment: derive it from something attested, never
+type it. Two sources work. A namespace naming convention, `prod-payments` becoming
+`/prod/payments/processor` through `regexp.replace` on the attested namespace. Or, when
+each environment has its own Kubernetes clusters, a separate `workload_identity` per
+environment (`id: /prod/{{ workload.kubernetes.namespace }}/…`, labelled `env: prod`)
+that only the issuer bots in that environment's clusters are allowed to issue.
+
+## Scopes
+
+Teleport 18 introduces scopes: a tree of paths such as `/prod/payments` under which
+roles, join tokens, bots and `workload_identity` resources can be defined, so a team can
+administer its own branch without cluster-wide privilege. A `workload_identity` created
+inside a scope must produce a SPIFFE ID whose path begins with the scope, followed by the
+separator segment `_`, followed by the administrator's own segments:
+
+```
+spiffe://example.teleport.sh/prod/payments/_/svc/payments/processor
+```
+
+The Auth Service re-validates the rendered ID against the scope on every issuance, so a
+scoped template cannot escape its branch (`lib/services/workload_identity.go:215` at
+v18.11.2; design in RFD 0229c). In a scoped estate the environment and the owning team
+therefore come from the scope, enforced by Teleport, and the `/svc/<namespace>/<serviceaccount>`
+shape here is what goes after the separator. At 18.11 the scopes code is present but the
+documentation and the RFD are not yet final; treat it as a preview and verify against your
+version before building policy on it.
 
 ## What the template can and cannot do
 
