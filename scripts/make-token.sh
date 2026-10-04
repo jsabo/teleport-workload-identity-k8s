@@ -2,7 +2,7 @@
 # Print a complete Teleport join token for one cluster's issuer bot, with the
 # cluster's ServiceAccount signing keys already filled in.
 #
-#   scripts/make-token.sh k8s-prod | tctl create -f -
+#   scripts/make-token.sh k8s-prod | tctl create --force
 #   tctl bots add k8s-prod --roles=workload-identity-issuer --token=k8s-prod-issuer
 #
 # Reads the keys from the CURRENT kubectl context (kubectl get --raw

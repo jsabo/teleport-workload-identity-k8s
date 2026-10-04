@@ -9,15 +9,15 @@
 # on the node and no secret is distributed; a restarted pod re-joins by itself.
 #
 # static_jwks: the Auth Service verifies the token against the Kubernetes
-# cluster's published signing key. Use this when the Auth Service cannot reach
-# your cluster's API (Teleport Cloud always). Fetch the key with
-# scripts/jwks.sh and paste it below. A cluster rebuild or key rotation changes
-# it and breaks the join until the token is updated.
+# cluster's published signing keys. Use this when the Auth Service cannot reach
+# your cluster's API (Teleport Cloud always). scripts/make-token.sh fills the
+# keys in from your current kubectl context; scripts/jwks.sh --check <token>
+# tells you when a cluster rebuild or key rotation has changed them.
 #
 # If your self-hosted Auth Service CAN reach the cluster API, use
 # `type: in_cluster` instead and drop the static_jwks block.
 #
-#   tctl create -f teleport/bot-token-example.yaml
+#   scripts/make-token.sh k8s-prod | tctl create --force
 #   tctl bots add k8s-prod --roles=workload-identity-issuer --token=k8s-prod-issuer
 kind: token
 version: v2
@@ -31,6 +31,6 @@ spec:
     type: static_jwks
     static_jwks:
       jwks: |
-        PASTE_OUTPUT_OF_scripts/jwks.sh
+        FILLED_IN_BY_scripts/make-token.sh
     allow:
       - service_account: "teleport-wi:tbot"

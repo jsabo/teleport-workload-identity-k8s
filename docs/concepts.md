@@ -44,9 +44,10 @@ Teleport CA rotations. For OIDC consumers it is the JSON Web Key Set at
 The standard SPIFFE interface a workload uses to get its SVIDs and bundle: a gRPC
 service on a Unix socket. Client libraries exist for Go, Java, Python, Rust and C, and
 tools like Envoy and spiffe-helper speak it natively. Here `tbot` serves it on every
-node at `/run/spire/agent-sockets/spiffe.sock` (SPIRE's conventional location, so tools
-find it without configuration). A pod mounts that directory and asks; it does not
-present any credential to ask.
+node at `/run/spire/agent-sockets/spiffe.sock` (SPIRE's conventional location). A pod
+receives that socket through a `csi.spiffe.io` volume at whatever path it chooses
+(`/spiffe-workload-api` in `examples/whoami.yaml`) and asks; it does not present any
+credential to ask.
 
 ## Workload attestation
 

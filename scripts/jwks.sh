@@ -17,7 +17,7 @@ if [ "${1:-}" = "--check" ]; then
     echo "ok: token ${token} pins the cluster's current $(printf '%s\n' "$live_kid" | sort -u | wc -l | tr -d ' ') signing key(s)"
   else
     echo "MISMATCH: token ${token} does not pin the cluster's current signing keys — recreate it:" >&2
-    echo "  scripts/make-token.sh ${token%-issuer} | tctl create --force -f -" >&2
+    echo "  scripts/make-token.sh ${token%-issuer} | tctl create --force" >&2
     echo "  live:   $(printf '%s' "$live_kid" | tr '\n' ' ')" >&2
     echo "  pinned: $(printf '%s' "$pinned_kid" | tr '\n' ' ')" >&2
     exit 1

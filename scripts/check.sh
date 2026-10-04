@@ -35,9 +35,10 @@ fi
 
 # tbot's readiness probe is /readyz, which is green only when its services (the
 # Workload API included) are healthy — so "ready" above already proves the
-# socket is being served. Count recent issuances for a feel of activity.
-issued=$(kubectl -n teleport-wi logs ds/tbot --all-pods --since=1h 2>/dev/null | grep -c '"Issued Workload Identity Credential"')
-echo "  info  ${issued:-0} credential(s) issued in the last hour (one pod's log if --all-pods is unsupported)"
+# socket is being served. Count recent issuances across all nodes for a feel of activity.
+issued=$(kubectl -n teleport-wi logs -l app.kubernetes.io/name=teleport-wi --tail=-1 --since=1h --max-log-requests=100 2>/dev/null \
+    | grep -c '"Issued Workload Identity Credential"')
+echo "  info  ${issued:-0} credential(s) issued in the last hour"
 
 # Teleport side: the bot has healthy instances, and the token still matches the cluster.
 if command -v tctl >/dev/null; then
@@ -46,7 +47,7 @@ if command -v tctl >/dev/null; then
   if "$(dirname "$0")/jwks.sh" --check "${bot}-issuer" >/dev/null 2>&1; then
     ok "token ${bot}-issuer pins this cluster's current signing key(s)"
   else
-    bad "token ${bot}-issuer does not match the cluster's JWKS — scripts/make-token.sh ${bot} | tctl create --force -f -"
+    bad "token ${bot}-issuer does not match the cluster's JWKS — scripts/make-token.sh ${bot} | tctl create --force"
   fi
 else
   echo "  skip  tctl not on PATH; bot and token checks skipped"

@@ -50,7 +50,8 @@ But labels are set by whoever writes the pod spec, so any deployer in a namespac
 claim any name. Namespace and ServiceAccount are set by the platform; labels are set by
 the tenant. Use labels for hints and extra claims, not for the identity.
 
-**Environment in the path** (`/production/payments/processor`, the doc's own example).
+**Environment in the path** (`/production/payments/processor`, the example in Teleport's
+documentation).
 Right when several environments share one Teleport cluster. Here they do not, so the
 segment would carry no information. If you need it, derive it from a namespace naming
 convention with `regexp.replace` rather than typing it, so it stays computed.
