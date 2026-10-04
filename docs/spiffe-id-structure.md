@@ -41,8 +41,10 @@ service running in three clusters would have three identities and every policy w
 have to name all three, then change when a cluster is rebuilt or renamed. An identity
 should survive a move. The cluster is a fact about the deployment; it is carried as the
 SVID `hint` and as the JWT claim `kube.cluster`, where it is visible for audit and
-available to policy that genuinely needs it. A location-bound identity template is
-provided separately (`teleport/workload-identity-k8s-optional.yaml`) for that case.
+available to JWT consumers that genuinely need it. The one case this does not cover is a
+mutual TLS peer that must accept one cluster and refuse another, because an X.509 SVID
+carries only the SPIFFE ID. If you have that case, add a second `workload_identity` whose
+path starts with `/k8s/{{ user.bot_name }}/` and accept the per-cluster policy names.
 
 **Pod labels as the source of the name** (`app.kubernetes.io/name` and friends). Labels
 are attested too, and Teleport can template on them (`{{ workload.kubernetes.labels["app"] }}`).
@@ -71,5 +73,5 @@ Durations in the resource are protobuf Durations: write `3600s`, not `1h`.
 A pod that matches several `workload_identity` resources receives several SVIDs. That is
 legal SPIFFE, but clients treat the first one returned as the default and it is not
 specified which comes first. The design here keeps exactly one resource matching any pod,
-so the question never arises. If you add the optional location identity, make sure your
-consumers select by SPIFFE ID or hint.
+so the question never arises. If you add a second identity, make sure your consumers
+select by SPIFFE ID or hint.

@@ -86,10 +86,11 @@ claim rather than part of the ID: [docs/spiffe-id-structure.md](docs/spiffe-id-s
 
 ## Install
 
-You need Teleport Enterprise 18.x with `tsh` and `tctl` logged in as `editor`, `kubectl`
-with cluster-admin on the target cluster, and `jq` and `curl` on your machine. Replace
-`example.teleport.sh` with your proxy and `k8s-prod` with a name for this Kubernetes
-cluster.
+You need a Teleport 18.x cluster with `tsh` and `tctl` logged in as `editor`, `kubectl`
+with cluster-admin on the target Kubernetes cluster, and `jq` and `curl` on your machine.
+Nothing here uses an Enterprise-only feature; it was verified against Teleport Enterprise
+Cloud 18.11.2. Replace `example.teleport.sh` with your proxy and `k8s-prod` with a name
+for this Kubernetes cluster.
 
 ```bash
 tsh login --proxy=example.teleport.sh:443
@@ -197,8 +198,8 @@ What this shows:
 - **Same file, two identities, nothing configured.** The namespace is attested by the
   kubelet, so a pod in `analytics` cannot obtain the `payments` identity.
 - **The issuer is itself a Teleport identity.** `tctl bots instances ls` lists one instance
-  per node, and `tctl lock --user=bot-k8s-prod --ttl=5m` stops issuance on that cluster
-  within one renewal.
+  per node, joined with the pod's own ServiceAccount token. Locking that bot stops
+  issuance on that cluster (see Day two).
 
 From here any SPIFFE-aware client library (go-spiffe, java-spiffe, spiffe-helper, Envoy's
 SDS) consumes the socket the same way: an X.509 SVID for mutual TLS between pods, or a
@@ -268,9 +269,11 @@ The manifests are identical everywhere.
   stops within one renewal; existing SVIDs run out at their lifetime.
 - **Change the ID shape**: edit `teleport/workload-identity-svc.yaml` and `tctl create -f`
   it again. No tbot changes.
-- **Location-bound identities**: `teleport/workload-identity-k8s-optional.yaml` adds a
-  second identity, `/k8s/<cluster>/<namespace>/<serviceaccount>`, for policies that depend
-  on where a workload runs. Off by default.
+- **Need the cluster in the ID?** Only a mutual TLS peer that must accept one cluster and
+  refuse another needs it: an X.509 SVID carries the SPIFFE ID alone, not the hint or the
+  JWT claims. For that case, create a second `workload_identity` whose path starts with
+  `/k8s/{{ user.bot_name }}/` and accept that every policy then names one ID per cluster.
+  JWT consumers such as AWS can condition on the `kube.cluster` claim instead.
 - **Versions**: tbot follows your Teleport cluster; `render.sh` reads the version from the
   proxy. The CSI driver (0.2.13) and its registrar (v2.18.0) are pinned in `scripts/render.sh`.
 

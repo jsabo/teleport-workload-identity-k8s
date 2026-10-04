@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Print the current Kubernetes cluster's ServiceAccount signing keys (JWKS) as a
-# single line, ready to paste into teleport/bot-token-example.yaml.
+# Print the current Kubernetes cluster's ServiceAccount signing keys (JWKS), or
+# compare them with the keys pinned in a Teleport join token.
 #
 #   scripts/jwks.sh                  # current kubectl context
-#   scripts/jwks.sh --check TOKEN    # compare with the key pinned in a Teleport token
+#   scripts/jwks.sh --check TOKEN    # exit 1 and print the fix if the token is stale
 set -euo pipefail
 
 live=$(kubectl get --raw /openid/v1/jwks)
